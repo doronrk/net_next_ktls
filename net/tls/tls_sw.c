@@ -886,7 +886,8 @@ int tls_sw_recvmsg(struct sock *sk,
 				&msg->msg_iter, MAX_SKB_FRAGS);
 			int to_copy = rxm->full_len -
 				tls_ctx->rx.overhead_size;
-			if (to_copy <= len &&
+			bool iter_is_kvec = (msg->msg_iter.type & ITER_KVEC);
+			if (!iter_is_kvec && to_copy <= len &&
 			    page_count < MAX_SKB_FRAGS &&
 			    likely(!(flags & MSG_PEEK)))  {
 				struct scatterlist sgin[MAX_SKB_FRAGS + 1];

@@ -339,15 +339,16 @@ static int tls_getsockopt(struct sock *sk, int level, int optname,
 	return do_tls_getsockopt(sk, optname, optval, optlen);
 }
 
-static int do_tls_setsockopt_tx(struct sock *sk, char __user *optval,
-				unsigned int optlen)
-{
-	struct tls_crypto_info *crypto_info, tmp_crypto_info;
-	struct tls_context *ctx = tls_get_ctx(sk);
-	struct proto *prot = NULL;
-	int rc = 0;
 
-	if (!optval || (optlen < sizeof(*crypto_info))) {
+
+static int do_tls_setsockopt_crypto_info(struct sock *sk, struct tls_context *ctx,
+                                         struct tls_crypto_info *crypto_info,
+                                         char __user *optval, unsigned int optlen)
+{
+        struct tls_crypto_info tmp_crypto_info;
+        int rc = 0;
+
+        if (!optval || (optlen < sizeof(*crypto_info))) {
 		rc = -EINVAL;
 		goto out;
 	}
@@ -364,12 +365,10 @@ static int do_tls_setsockopt_tx(struct sock *sk, char __user *optval,
 		goto out;
 	}
 
-	/* get user crypto info */
-	crypto_info = &ctx->crypto_send;
-
 	/* Currently we don't support set crypto info more than one time */
-	if (TLS_CRYPTO_INFO_READY(crypto_info))
+	if (TLS_CRYPTO_INFO_READY(crypto_info)) {
 		goto out;
+	}
 
 	switch (tmp_crypto_info.cipher_type) {
 	case TLS_CIPHER_AES_GCM_128: {
@@ -393,18 +392,14 @@ static int do_tls_setsockopt_tx(struct sock *sk, char __user *optval,
 		goto out;
 	}
 
-	ctx->sk_write_space = sk->sk_write_space;
-	sk->sk_write_space = tls_write_space;
+	if (!ctx->sk_write_space) {
+		ctx->sk_write_space = sk->sk_write_space;
+		sk->sk_write_space = tls_write_space;
+		ctx->sk_proto_close = sk->sk_prot->close;
+		sk->sk_prot = &tls_sw_prot;
+		sk->sk_socket->ops = &tls_sw_proto_ops;
+	}
 
-	ctx->sk_proto_close = sk->sk_prot->close;
-
-	/* currently SW is default, we will have ethtool in future */
-	rc = tls_set_sw_offload_tx(sk, ctx);
-	prot = &tls_sw_prot;
-	if (rc)
-		goto err_crypto_info;
-
-	sk->sk_prot = prot;
 	goto out;
 
 err_crypto_info:
@@ -414,74 +409,48 @@ out:
 }
 
 static int do_tls_setsockopt_rx(struct sock *sk, char __user *optval,
-				unsigned int optlen)
+                                unsigned int optlen)
 {
-	struct tls_crypto_info *crypto_info, tmp_crypto_info;
 	struct tls_context *ctx = tls_get_ctx(sk);
-	struct proto *prot = NULL;
+	/* get user crypto info */
+	struct tls_crypto_info *crypto_info = &ctx->crypto_recv;
 	int rc = 0;
 
-	if (!optval || (optlen < sizeof(*crypto_info))) {
-		rc = -EINVAL;
+        rc = do_tls_setsockopt_crypto_info(sk, ctx, crypto_info, optval, optlen);
+        if (rc)
 		goto out;
-	}
 
-	rc = copy_from_user(&tmp_crypto_info, optval, sizeof(*crypto_info));
-	if (rc) {
-		rc = -EFAULT;
-		goto out;
-	}
-
-	/* check version */
-	if (tmp_crypto_info.version != TLS_1_2_VERSION) {
-		rc = -ENOTSUPP;
-		goto out;
-	}
-
-	/* get user crypto info */
-	crypto_info = &ctx->crypto_recv;
-
-	/* Currently we don't support set crypto info more than one time */
-	// TODO if (TLS_CRYPTO_INFO_READY(crypto_info))
-	// goto out;
-
-	switch (tmp_crypto_info.cipher_type) {
-	case TLS_CIPHER_AES_GCM_128: {
-		if (optlen != sizeof(struct tls12_crypto_info_aes_gcm_128)) {
-			rc = -EINVAL;
-			goto out;
-		}
-		rc = copy_from_user(
-		  crypto_info,
-		  optval,
-		  sizeof(struct tls12_crypto_info_aes_gcm_128));
-
-		if (rc) {
-			rc = -EFAULT;
-			goto err_crypto_info;
-		}
-		break;
-	}
-	default:
-		rc = -EINVAL;
-		goto out;
-	}
-
-	//TODO
-/* ctx->sk_write_space = sk->sk_write_space; */
-	/* sk->sk_write_space = tls_write_space; */
-
-	//ctx->sk_proto_close = sk->sk_prot->close;
-
-	/* currently SW is default, we will have ethtool in future */
+        /* currently SW is default, we will have ethtool in future */
 	rc = tls_set_sw_offload_rx(sk, ctx);
-	prot = &tls_sw_prot;
 	if (rc)
 		goto err_crypto_info;
 
-	sk->sk_prot = prot;
-	sk->sk_socket->ops = &tls_sw_proto_ops;
-	goto out;
+        goto out;
+
+err_crypto_info:
+	memset(crypto_info, 0, sizeof(*crypto_info));
+out:
+	return rc;
+}
+
+static int do_tls_setsockopt_tx(struct sock *sk, char __user *optval,
+			        unsigned int optlen)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	/* get user crypto info */
+	struct tls_crypto_info *crypto_info = &ctx->crypto_send;
+	int rc = 0;
+
+        rc = do_tls_setsockopt_crypto_info(sk, ctx, crypto_info, optval, optlen);
+        if (rc)
+		goto out;
+
+        /* currently SW is default, we will have ethtool in future */
+	rc = tls_set_sw_offload_tx(sk, ctx);
+	if (rc)
+		goto err_crypto_info;
+
+        goto out;
 
 err_crypto_info:
 	memset(crypto_info, 0, sizeof(*crypto_info));
